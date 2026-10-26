@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Офис VaryaStudio</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600&family=JetBrains+Mono:wght@400&display=swap">
+<style>
+/* Layout: one full-bleed 3D view; a single control strip floats at the bottom, a name tag at the top left.
+   Deliberately single-theme: the scene is an interior at night-ish office light, the chrome stays dark glass over it. */
+:root {
+  --ink: #0d1013;
+  --glass: rgba(16, 20, 24, 0.72);
+  --line: rgba(255, 255, 255, 0.14);
+  --text: #eef2f0;
+  --muted: #9aa6a2;
+  --key: #5fd38a;            /* chroma-green, the studio's own colour */
+  --ui: "Golos Text", "Segoe UI", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, Consolas, monospace;
+  color-scheme: dark;
+}
+[hidden] { display: none !important; }
+html, body { height: 100%; }
+body { margin: 0; background: var(--ink); color: var(--text); font-family: var(--ui); overflow: hidden; }
+#view { position: fixed; inset: 0; display: block; width: 100%; height: 100%; touch-action: none; }
+.tag {
+  position: fixed; top: calc(14px + env(safe-area-inset-top, 0px)); left: max(16px, env(safe-area-inset-left, 0px));
+  display: grid; gap: 2px; padding: 10px 14px; background: var(--glass); border: 1px solid var(--line); border-radius: 10px;
+  backdrop-filter: blur(8px); max-width: calc(100% - 32px);
+}
+.tag b { font-weight: 600; font-size: 15px; letter-spacing: 0.01em; }
+.tag span { color: var(--muted); font-size: 12px; }
+.bar {
+  position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  width: min(720px, calc(100% - 32px)); box-sizing: border-box;
+  display: flex; align-items: center; gap: 12px; padding: 10px 12px;
+  background: var(--glass); border: 1px solid var(--line); border-radius: 14px; backdrop-filter: blur(8px);
+}
+button {
+  font: 500 14px var(--ui); color: var(--text); background: transparent; border: 1px solid var(--line);
+  border-radius: 9px; padding: 8px 12px; cursor: pointer; white-space: nowrap;
+}
+button:hover { border-color: var(--muted); }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--key); outline-offset: 2px; }
+button[aria-pressed="true"] { background: var(--key); color: var(--ink); border-color: var(--key); }
+#scrub { flex: 1; min-width: 0; accent-color: var(--key); }
+#stop { font: 12px var(--mono); color: var(--muted); min-width: 9.5em; text-align: right; }
+.hint { position: fixed; right: max(16px, env(safe-area-inset-right, 0px)); top: calc(14px + env(safe-area-inset-top, 0px));
+  font-size: 12px; color: var(--muted); background: var(--glass); border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; }
+#load { position: fixed; inset: 0; display: grid; place-items: center; background: var(--ink); z-index: 5; }
+#load div { display: grid; gap: 10px; width: min(320px, calc(100% - 32px)); }
+#load p { margin: 0; font-size: 14px; color: var(--muted); }
+#load i { display: block; height: 3px; background: var(--line); border-radius: 2px; overflow: hidden; }
+#load i::after { content: ""; display: block; height: 100%; width: var(--p, 0%); background: var(--key); transition: width 0.2s; }
+@media (max-width: 560px) { #stop, .hint { display: none; } .bar { gap: 8px; } }
+@media (prefers-reduced-motion: reduce) { #load i::after { transition: none; } }
+</style>
+</head>
+<body>
+<canvas id="view" aria-label="Трёхмерный вид офиса"></canvas>
+<div class="tag"><b>Офис VaryaStudio</b><span>Сколково · зал, лаунж, студия с хромакеем</span></div>
+<div class="hint" id="hint" hidden>Мышь — осмотреться · WASD — идти · колесо — ближе</div>
+<div class="bar">
+  <button id="play" aria-pressed="true">Пауза</button>
+  <button id="free" aria-pressed="false">Осмотреться</button>
+  <input id="scrub" type="range" min="0" max="1000" value="0" aria-label="Положение на маршруте">
+  <span id="stop">Зал у окон</span>
+</div>
+<div id="load"><div><p id="loadtxt">Загрузка сцены…</p><i id="bar"></i></div></div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://unpkg.com/three@0.170.0/build/three.module.js",
+  "three/addons/": "https://unpkg.com/three@0.170.0/examples/jsm/"
+} }
+</script>
+<script type="module">
+import * as THREE from "three";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { DRACOLoader } from "three/addons/loaders/DRACOLoader.js";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+
+// Scene units: metres. Unreal (x, y, z) cm -> here (x, z, y) / 100. Lighting is baked into the textures (Cycles),
+// so every material is shown unlit, exactly as baked.
+const ue = (x, y, z = 160) => new THREE.Vector3(x / 100, z / 100, y / 100);
+const STOPS = [   // tour, UE cm (kept >= 1 m off walls: corridor on its centre line y 955, studio left through the opening)
+  [ue(60, 380), "Зал у окон"], [ue(160, -150), "Зал у окон"], [ue(420, -230), "Рабочие места"],
+  [ue(440, 300), "Вешалка и кресла"], [ue(400, 720), "Поворот в коридор"], [ue(430, 955, 165), "Коридор"],
+  [ue(900, 955, 165), "Коридор"], [ue(560, 955, 165), "Коридор"], [ue(150, 960), "Лаунж"], [ue(80, 1250), "Лаунж"],
+  [ue(40, 1560), "Остекление во двор"], [ue(-240, 1430, 170), "Студия"], [ue(-430, 1220, 175), "Хромакей"],
+  [ue(-420, 1050, 170), "Пульт"], [ue(-240, 960), "Студия"], [ue(-150, 760), "Зал"], [ue(-60, 420), "Зал"]];
+const path = new THREE.CatmullRomCurve3(STOPS.map(s => s[0]), true, "centripetal", 0.5);
+const TOUR_SECONDS = 110;
+
+const canvas = document.getElementById("view");
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance", logarithmicDepthBuffer: true });   // near-coplanar layers (hatches, felt, LED strips) stop flickering
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.NoToneMapping;
+const scene = new THREE.Scene(); scene.background = new THREE.Color(0x0d1013);
+const camera = new THREE.PerspectiveCamera(70, 1, 0.1, 300);
+camera.position.copy(path.getPointAt(0));
+
+const manager = new THREE.LoadingManager();
+manager.onProgress = (_, done, total) => {
+  document.getElementById("load").style.setProperty("--p", Math.round(100 * done / total) + "%");
+  document.getElementById("bar").style.setProperty("--p", Math.round(100 * done / total) + "%");
+};
+const draco = new DRACOLoader(manager).setDecoderPath("./draco/");
+const loader = new GLTFLoader(manager).setDRACOLoader(draco);
+
+const ANISO = renderer.capabilities.getMaxAnisotropy();
+function crisp(m) {   // sharp atlases at grazing angles; LED strips drawn over their housings (2 mm apart)
+  for (const k of ["map", "emissiveMap"]) if (m[k]) { m[k].anisotropy = ANISO; m[k].needsUpdate = true; }
+  if (/^BK_/.test(m.name)) m.side = THREE.DoubleSide;
+  if (/LED/.test(m.name)) { m.polygonOffset = true; m.polygonOffsetFactor = -4; m.polygonOffsetUnits = -4; }
+  if (/^BK_(P1|P2|AL)$/.test(m.name)) { m.polygonOffset = true; m.polygonOffsetFactor = -1; m.polygonOffsetUnits = -2; }   // small props lie flush on desks / floor: they win the tie
+  return m;
+}
+function unlit(m) {   // baked / translucent / self-lit -> plain unlit material
+  if (m.isMeshBasicMaterial) {
+    if (m.name === "BK_AL") { m.alphaTest = 0.5; m.transparent = false; }
+    return crisp(m);
+  }
+  const map = m.map || m.emissiveMap || null;
+  const b = new THREE.MeshBasicMaterial({ name: m.name, map, side: m.side, transparent: m.transparent,
+    opacity: m.opacity, depthWrite: !m.transparent, alphaTest: m.alphaTest });
+  if (!map) b.color.copy(m.emissive && m.emissive.getHex() ? m.emissive : m.color);
+  if (/Blind/.test(m.name)) b.color.multiplyScalar(1.7);           // blinds glow in daylight
+  if (/Frost|Film/.test(m.name)) {                                 // frosted film: even milky grey (UE's baked map tiled badly)
+    b.map = null; b.color.set(/Film/.test(m.name) ? 0xe9ecee : 0x7f7a73); b.opacity = /Film/.test(m.name) ? 0.9 : 0.92;   // frost: UE reads warm mid-grey
+  }
+  if (/Glass|Frost|Film/.test(m.name)) { b.transparent = true; b.depthWrite = false; }
+  return crisp(b);
+}
+loader.load("./office_v9.gltf", g => {
+  g.scene.traverse(o => { if (o.isMesh) { o.material = Array.isArray(o.material) ? o.material.map(unlit) : unlit(o.material); o.frustumCulled = true; } });
+  scene.add(g.scene);
+  document.getElementById("load").hidden = true;
+}, undefined, e => { document.getElementById("loadtxt").textContent = "Не удалось загрузить сцену: " + e.message; });
+
+// ---- tour + free look
+const controls = new OrbitControls(camera, canvas);
+controls.enabled = false; controls.enableDamping = true; controls.rotateSpeed = -0.35; controls.zoomSpeed = 0.6;
+controls.minDistance = 0.01; controls.maxDistance = 0.02;           // tiny radius: orbiting == looking around in place
+let t = 0, playing = true, free = false, frozen = false;
+const keys = new Set();
+const playBtn = document.getElementById("play"), freeBtn = document.getElementById("free"), scrub = document.getElementById("scrub");
+const stopLbl = document.getElementById("stop"), hint = document.getElementById("hint");
+function label(u) {   // nearest stop on the curve
+  let best = 0, bd = 1e9;
+  STOPS.forEach((s, i) => { const d = s[0].distanceToSquared(path.getPointAt(u)); if (d < bd) { bd = d; best = i; } });
+  return STOPS[best][1];
+}
+function setPlaying(p) { playing = p; playBtn.setAttribute("aria-pressed", String(p)); playBtn.textContent = p ? "Пауза" : "Облёт"; }
+function setFree(f) {
+  free = f; freeBtn.setAttribute("aria-pressed", String(f)); controls.enabled = f; hint.hidden = !f;
+  if (f) {
+    setPlaying(false);
+    const dir = new THREE.Vector3(); camera.getWorldDirection(dir);
+    controls.target.copy(camera.position).addScaledVector(dir, 0.015); controls.update();
+  }
+}
+playBtn.onclick = () => { if (free) setFree(false); setPlaying(!playing); };
+freeBtn.onclick = () => setFree(!free);
+scrub.oninput = () => { if (free) setFree(false); setPlaying(false); t = scrub.value / 1000; place(); };
+addEventListener("keydown", e => { if (free) keys.add(e.code); });
+addEventListener("keyup", e => keys.delete(e.code));
+
+const look = new THREE.Vector3();
+function place() {
+  const p = path.getPointAt(t);
+  const ahead = path.getPointAt((t + 0.025) % 1);
+  camera.position.copy(p);
+  look.lerp(ahead, look.lengthSq() ? 0.08 : 1);                    // eased gaze: no snapping at the turns
+  camera.lookAt(look);
+  scrub.value = Math.round(t * 1000); stopLbl.textContent = label(t);
+}
+function resize() {
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix();
+}
+addEventListener("resize", resize); resize();
+window.tour = {
+  go(u) { setFree(false); setPlaying(false); t = u; look.set(0, 0, 0); place(); renderer.render(scene, camera); },
+  view(p, q) { setFree(false); setPlaying(false); camera.position.copy(ue(...p)); camera.lookAt(ue(...q)); renderer.render(scene, camera); },
+  scene, camera, renderer,
+  freeze: () => { frozen = true; },                                  // tests: the loop stops moving the camera
+};   // for embedding / tests   // for embedding / tests
+const clock = new THREE.Clock();
+const fwd = new THREE.Vector3(), side = new THREE.Vector3();
+renderer.setAnimationLoop(() => {
+  const dt = Math.min(clock.getDelta(), 0.1);
+  if (frozen) {
+  } else if (free) {
+    camera.getWorldDirection(fwd); fwd.y = 0; fwd.normalize(); side.crossVectors(fwd, camera.up);
+    const v = 1.6 * dt, move = new THREE.Vector3();
+    if (keys.has("KeyW") || keys.has("ArrowUp")) move.add(fwd);
+    if (keys.has("KeyS") || keys.has("ArrowDown")) move.sub(fwd);
+    if (keys.has("KeyD") || keys.has("ArrowRight")) move.add(side);
+    if (keys.has("KeyA") || keys.has("ArrowLeft")) move.sub(side);
+    if (move.lengthSq()) { move.normalize().multiplyScalar(v); camera.position.add(move); controls.target.add(move); }
+    controls.update();
+  } else {
+    if (playing) t = (t + dt / TOUR_SECONDS) % 1;
+    place();
+  }
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>
