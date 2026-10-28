@@ -85,14 +85,15 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 // Scene units: metres. Unreal (x, y, z) cm -> here (x, z, y) / 100. Lighting is baked into the textures (Cycles),
 // so every material is shown unlit, exactly as baked.
 const ue = (x, y, z = 160) => new THREE.Vector3(x / 100, z / 100, y / 100);
-const STOPS = [   // tour, UE cm (kept >= 1 m off walls: corridor on its centre line y 955, studio left through the opening)
-  [ue(60, 380), "Зал у окон"], [ue(160, -150), "Зал у окон"], [ue(420, -230), "Рабочие места"],
-  [ue(440, 300), "Вешалка и кресла"], [ue(400, 720), "Поворот в коридор"], [ue(430, 955, 165), "Коридор"],
-  [ue(900, 955, 165), "Коридор"], [ue(560, 955, 165), "Коридор"], [ue(150, 960), "Лаунж"], [ue(80, 1250), "Лаунж"],
-  [ue(40, 1560), "Остекление во двор"], [ue(-240, 1430, 170), "Студия"], [ue(-430, 1220, 175), "Хромакей"],
-  [ue(-420, 1050, 170), "Пульт"], [ue(-240, 960), "Студия"], [ue(-150, 760), "Зал"], [ue(-60, 420), "Зал"]];
-const path = new THREE.CatmullRomCurve3(STOPS.map(s => s[0]), true, "centripetal", 0.5);
-const TOUR_SECONDS = 110;
+const STOPS = [   // tour on the user's plan (28.10): start at the lobby doors (cross), corridor centre line y 955, into the hall
+  // to the windows, turn round through the open right side, back down the middle through the lounge, end at the blue felt
+  // facing the cyc (tick). UE cm; points >= 1 m off walls.
+  [ue(1200, 955, 165), "Коридор"], [ue(900, 955, 165), "Коридор"], [ue(560, 955, 165), "Коридор"],
+  [ue(300, 840), "Зал"], [ue(150, 560), "Зал"], [ue(120, 280), "Зал у окон"], [ue(60, 200), "Зал у окон"],
+  [ue(-30, 290), "Зал у окон"], [ue(-20, 520), "Зал"], [ue(0, 950), "Лаунж"], [ue(-40, 1280, 162), "Лаунж"],
+  [ue(-200, 1335, 165), "Студия"], [ue(-340, 1330, 166), "Хромакей"]];
+const path = new THREE.CatmullRomCurve3(STOPS.map(s => s[0]), false, "centripetal", 0.5);   // open: start -> finish
+const TOUR_SECONDS = 50;
 
 const canvas = document.getElementById("view");
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance", logarithmicDepthBuffer: true });   // near-coplanar layers (hatches, felt, LED strips) stop flickering
@@ -163,7 +164,7 @@ function setFree(f) {
     controls.target.copy(camera.position).addScaledVector(dir, 0.015); controls.update();
   }
 }
-playBtn.onclick = () => { if (free) setFree(false); setPlaying(!playing); };
+playBtn.onclick = () => { if (free) setFree(false); if (!playing && t >= 1) { t = 0; look.set(0, 0, 0); } setPlaying(!playing); };   // at the finish: start over
 freeBtn.onclick = () => setFree(!free);
 scrub.oninput = () => { if (free) setFree(false); setPlaying(false); t = scrub.value / 1000; place(); };
 addEventListener("keydown", e => { if (free) keys.add(e.code); });
@@ -172,7 +173,7 @@ addEventListener("keyup", e => keys.delete(e.code));
 const look = new THREE.Vector3();
 function place() {
   const p = path.getPointAt(t);
-  const ahead = path.getPointAt((t + 0.025) % 1);
+  const ahead = p.clone().addScaledVector(path.getTangentAt(Math.min(t, 0.999)), 2.0);   // gaze 2 m ahead along the route
   camera.position.copy(p);
   look.lerp(ahead, look.lengthSq() ? 0.08 : 1);                    // eased gaze: no snapping at the turns
   camera.lookAt(look);
@@ -204,7 +205,7 @@ renderer.setAnimationLoop(() => {
     if (move.lengthSq()) { move.normalize().multiplyScalar(v); camera.position.add(move); controls.target.add(move); }
     controls.update();
   } else {
-    if (playing) t = (t + dt / TOUR_SECONDS) % 1;
+    if (playing) { t = Math.min(1, t + dt / TOUR_SECONDS); if (t >= 1) setPlaying(false); }   // stops at the finish
     place();
   }
   renderer.render(scene, camera);
